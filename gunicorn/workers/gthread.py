@@ -14,6 +14,7 @@ from concurrent import futures
 import errno
 import os
 import selectors
+import signal
 import socket
 import ssl
 import sys
@@ -107,6 +108,7 @@ class ThreadWorker(base.Worker):
 
     def _wrap_future(self, fs, conn):
         fs.conn = conn
+        fs._request_timeout = time.monotonic() + self.cfg.timeout
         self.futures.append(fs)
         fs.add_done_callback(self.finish_request)
 
@@ -219,6 +221,15 @@ class ThreadWorker(base.Worker):
                 # wait for a request to finish
                 result = futures.wait(self.futures, timeout=1.0,
                                       return_when=futures.FIRST_COMPLETED)
+
+            # `gthread` does not implement ANY kind of request timeout, the
+            # simplest request timeout will kill the entire worker.
+            # This is similar to how sync workers behave BUT if you have more
+            # than 1 thread and other requests in-flight, they'll also get
+            # killed when this timeout occurs.
+            for fut in self.futures:
+                if time.monotonic() > fut._request_timeout:
+                    os.kill(os.getpid(), signal.SIGTERM)
 
             # clean up finished requests
             for fut in result.done:
