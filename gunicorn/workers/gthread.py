@@ -202,12 +202,16 @@ class ThreadWorker(base.Worker):
             acceptor = partial(self.accept, server)
             self.poller.register(sock, selectors.EVENT_READ, acceptor)
 
+        # This flag is set if any one request times out.
+        # Current futures are drained and worker shuts down, master process will start a new worker.
+        timed_out = False
+
         while self.alive:
             # notify the arbiter we are alive
             self.notify()
 
             # can we accept more connections?
-            if self.nr_conns < self.worker_connections:
+            if self.nr_conns < self.worker_connections and not timed_out:
                 # wait for an event
                 events = self.poller.select(1.0)
                 for key, _ in events:
@@ -222,15 +226,6 @@ class ThreadWorker(base.Worker):
                 result = futures.wait(self.futures, timeout=1.0,
                                       return_when=futures.FIRST_COMPLETED)
 
-            # `gthread` does not implement ANY kind of request timeout, the
-            # simplest request timeout will kill the entire worker.
-            # This is similar to how sync workers behave BUT if you have more
-            # than 1 thread and other requests in-flight, they'll also get
-            # killed when this timeout occurs.
-            for fut in self.futures:
-                if time.monotonic() > fut._request_timeout:
-                    os.kill(os.getpid(), signal.SIGTERM)
-
             # clean up finished requests
             for fut in result.done:
                 self.futures.remove(fut)
@@ -240,6 +235,26 @@ class ThreadWorker(base.Worker):
 
             # handle keepalive timeouts
             self.murder_keepalived()
+
+            # `gthread` does not implement ANY kind of request timeout, the
+            # simplest request timeout will kill the entire worker.
+            # This is similar to how sync workers behave BUT if you have more
+            # than 1 thread and other requests in-flight, they'll also get
+            # killed when this timeout occurs.
+            current_time = time.monotonic()
+            for fut in self.futures:
+                if current_time > fut._request_timeout and not timed_out:
+                    timed_out = True
+                    self.log.error("A request timed out. Exiting.")
+
+            if timed_out:
+                if len(self.futures) == 1:
+                    # All futures except stuck request is drained
+                    os.kill(os.getpid(), signal.SIGTERM)
+                elif current_time > fut._request_timeout + self.cfg.timeout:
+                    # Should not wait after 2x timeout
+                    os.kill(os.getpid(), signal.SIGTERM)
+                self.log.warning(f"Waiting for {len(self.futures) - 1} ongoing requests to finish before exiting.")
 
         self.tpool.shutdown(False)
         self.poller.close()
