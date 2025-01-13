@@ -211,7 +211,7 @@ class ThreadWorker(base.Worker):
             self.notify()
 
             # can we accept more connections?
-            if self.nr_conns < self.worker_connections and not timed_out:
+            if self.nr_conns < self.worker_connections:
                 # wait for an event
                 events = self.poller.select(1.0)
                 for key, _ in events:
@@ -238,21 +238,23 @@ class ThreadWorker(base.Worker):
 
             # `gthread` does not implement ANY kind of request timeout, the
             # simplest request timeout will kill the entire worker.
-            # This is similar to how sync workers behave BUT if you have more
-            # than 1 thread and other requests in-flight, they'll also get
-            # killed when this timeout occurs.
             current_time = time.monotonic()
             for fut in self.futures:
                 if current_time > fut._request_timeout and not timed_out:
                     timed_out = True
                     self.log.error("A request timed out. Exiting.")
+                    # Don't accept any new connections
+                    for sock in self.sockets:
+                        self.poller.unregister(sock)
+                    # Dont keep any connections alive after this
+                    self.max_keepalived = 0
 
             if timed_out:
                 if len(self.futures) == 1:
                     # All futures except stuck request is drained
                     os.kill(os.getpid(), signal.SIGTERM)
-                elif current_time > fut._request_timeout + self.cfg.timeout:
-                    # Should not wait after 2x timeout
+                elif current_time > fut._request_timeout + self.cfg.timeout / 2:
+                    # Should not wait after 1.5x timeout
                     os.kill(os.getpid(), signal.SIGTERM)
                 self.log.warning(f"Waiting for {len(self.futures) - 1} ongoing requests to finish before exiting.")
 
