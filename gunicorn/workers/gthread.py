@@ -14,7 +14,6 @@ from concurrent import futures
 import errno
 import os
 import selectors
-import signal
 import socket
 import ssl
 import sys
@@ -202,10 +201,6 @@ class ThreadWorker(base.Worker):
             acceptor = partial(self.accept, server)
             self.poller.register(sock, selectors.EVENT_READ, acceptor)
 
-        # This flag is set if any one request times out.
-        # Current futures are drained and worker shuts down, master process will start a new worker.
-        timed_out = False
-
         while self.alive:
             # notify the arbiter we are alive
             self.notify()
@@ -240,23 +235,9 @@ class ThreadWorker(base.Worker):
             # simplest request timeout will kill the entire worker.
             current_time = time.monotonic()
             for fut in self.futures:
-                if current_time > fut._request_timeout and not timed_out:
-                    timed_out = True
+                if current_time > fut._request_timeout:
+                    self.alive = False
                     self.log.error("A request timed out. Exiting.")
-                    # Don't accept any new connections
-                    for sock in self.sockets:
-                        self.poller.unregister(sock)
-                    # Dont keep any connections alive after this
-                    self.max_keepalived = 0
-
-            if timed_out:
-                if len(self.futures) == 1:
-                    # All futures except stuck request is drained
-                    os.kill(os.getpid(), signal.SIGTERM)
-                elif current_time > fut._request_timeout + self.cfg.timeout / 2:
-                    # Should not wait after 1.5x timeout
-                    os.kill(os.getpid(), signal.SIGTERM)
-                self.log.warning(f"Waiting for {len(self.futures) - 1} ongoing requests to finish before exiting.")
 
         self.tpool.shutdown(False)
         self.poller.close()
