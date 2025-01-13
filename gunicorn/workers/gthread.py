@@ -107,6 +107,7 @@ class ThreadWorker(base.Worker):
 
     def _wrap_future(self, fs, conn):
         fs.conn = conn
+        fs._request_timeout = time.monotonic() + self.cfg.timeout
         self.futures.append(fs)
         fs.add_done_callback(self.finish_request)
 
@@ -229,6 +230,14 @@ class ThreadWorker(base.Worker):
 
             # handle keepalive timeouts
             self.murder_keepalived()
+
+            # `gthread` does not implement ANY kind of request timeout, the
+            # simplest request timeout will kill the entire worker.
+            current_time = time.monotonic()
+            for fut in self.futures:
+                if current_time > fut._request_timeout:
+                    self.alive = False
+                    self.log.error("A request timed out. Exiting.")
 
         self.tpool.shutdown(False)
         self.poller.close()
