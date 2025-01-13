@@ -1,3 +1,22 @@
+Fork Information
+--------
+
+This is a fork of gunicorn with the following changes:
+
+1. Request timeout implementation for `gthread` - https://github.com/frappe/gunicorn/pull/1 (upstream doesn't have any, we NEED this.)
+2. Higher timeout for `selector` - https://github.com/frappe/gunicorn/pull/2 (This is a small optional performance improvement)
+
+Note to anyone upgrading/adding changes:
+- Pull upstream changes
+- Reapply our changes or reconcile our changes
+- Update commit/ref in frappe/frappe `pyproject.toml`
+- Keep this readme up-to-date with changes. Keep changes small and to the point. 
+
+TODO:
+
+- [ ]  Plan a cleaner solution using custom workers.  All current changes can be used with custom workers but they have the same awkwardness of maintaining a fork since we want to "override" not extend core behavior.  
+
+
 Gunicorn
 --------
 
