@@ -14,6 +14,7 @@ from concurrent import futures
 import errno
 import os
 import selectors
+import signal
 import socket
 import ssl
 import sys
@@ -78,6 +79,8 @@ class ThreadWorker(base.Worker):
         self.futures = deque()
         self._keep = deque()
         self.nr_conns = 0
+        self._requested_more_workers = False
+        self._requested_fewer_workers = False
 
     @classmethod
     def check_config(cls, cfg, log):
@@ -201,6 +204,7 @@ class ThreadWorker(base.Worker):
             acceptor = partial(self.accept, server)
             self.poller.register(sock, selectors.EVENT_READ, acceptor)
 
+        idle_since = 0
         while self.alive:
             # notify the arbiter we are alive
             self.notify()
@@ -220,9 +224,20 @@ class ThreadWorker(base.Worker):
                 result = futures.wait(self.futures, timeout=0,
                                       return_when=futures.FIRST_COMPLETED)
             else:
+                # We are possibly overloaded, see if arbiter can assign more workers
+                # This request is only made once per worker. Next worker will
+                # again request more resources if it doesn't find any.
+                if not self._requested_more_workers:
+                    self._requested_more_workers = True
+                    self._requested_fewer_workers = False
+                    self.log.info("Unable to accept more requests, requested increasing workers")
+                    os.kill(self.ppid, signal.SIGTTIN)
+
                 # wait for a request to finish
                 result = futures.wait(self.futures, timeout=1.0,
                                       return_when=futures.FIRST_COMPLETED)
+
+
 
             # clean up finished requests
             for fut in result.done:
@@ -241,6 +256,16 @@ class ThreadWorker(base.Worker):
                 if current_time > fut._request_timeout:
                     self.alive = False
                     self.log.error("A request timed out. Exiting.")
+
+            if not self.futures and not result.done:
+                # We have not seen any activity in a while, request reducing one worker count.
+                if not self._requested_fewer_workers and idle_since and current_time - idle_since > 30:
+                    self._requested_fewer_workers = True
+                    self._requested_more_workers = False
+                    self.log.info("No requests serviced in recent time, requested reducing workers")
+                    os.kill(self.ppid, signal.SIGTTOU)
+            else:
+                idle_since = current_time
 
         self.tpool.shutdown(False)
         self.poller.close()

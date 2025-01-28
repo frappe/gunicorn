@@ -6,6 +6,7 @@ import os
 import random
 import select
 import signal
+import math
 import sys
 import time
 import traceback
@@ -99,6 +100,7 @@ class Arbiter:
         self.worker_class = self.cfg.worker_class
         self.address = self.cfg.address
         self.num_workers = self.cfg.workers
+        self.max_workers = self.cfg.workers
         self.timeout = self.cfg.timeout
         self.proc_name = self.cfg.proc_name
 
@@ -272,18 +274,23 @@ class Arbiter:
         SIGTTIN handling.
         Increases the number of workers by one.
         """
-        self.num_workers += 1
-        self.manage_workers()
+        # Don't exceed max workers.
+        new_worker_count = min(self.max_workers, self.num_workers + 1)
+        if self.num_workers != new_worker_count:
+            self.num_workers = new_worker_count
+            self.manage_workers()
 
     def handle_ttou(self):
         """\
         SIGTTOU handling.
         Decreases the number of workers by one.
         """
-        if self.num_workers <= 1:
-            return
-        self.num_workers -= 1
-        self.manage_workers()
+        # Don't drop below 20% of max workers.
+        min_workers = math.ceil(self.max_workers / 5)
+        new_worker_count = max(min_workers, self.num_workers - 1)
+        if self.num_workers != new_worker_count:
+            self.num_workers = new_worker_count
+            self.manage_workers()
 
     def handle_usr1(self):
         """\
