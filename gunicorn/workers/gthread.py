@@ -74,6 +74,7 @@ class ThreadWorker(base.Worker):
         # initialise the pool
         self.tpool = None
         self.poller = None
+        self.shutdown_event = os.eventfd(1)
         self._lock = None
         self.futures = deque()
         self._keep = deque()
@@ -96,6 +97,10 @@ class ThreadWorker(base.Worker):
     def get_thread_pool(self):
         """Override this method to customize how the thread pool is created"""
         return futures.ThreadPoolExecutor(max_workers=self.cfg.threads)
+
+    def handle_exit(self, sig, frame):
+        self.alive = False
+        os.eventfd_write(self.shutdown_event, 0)
 
     def handle_quit(self, sig, frame):
         self.alive = False
@@ -200,6 +205,9 @@ class ThreadWorker(base.Worker):
             server = sock.getsockname()
             acceptor = partial(self.accept, server)
             self.poller.register(sock, selectors.EVENT_READ, acceptor)
+
+        # This is just used to wake up the poller, nothing else needs to be done.
+        self.poller.register(self.shutdown_event, selectors.EVENT_READ, lambda *args: None)
 
         while self.alive:
             # notify the arbiter we are alive
