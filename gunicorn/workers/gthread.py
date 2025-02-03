@@ -74,7 +74,7 @@ class ThreadWorker(base.Worker):
         # initialise the pool
         self.tpool = None
         self.poller = None
-        self.shutdown_event = os.eventfd(1)
+        self.shutdown_event = os.eventfd(0)
         self._lock = None
         self.futures = deque()
         self._keep = deque()
@@ -100,7 +100,7 @@ class ThreadWorker(base.Worker):
 
     def handle_exit(self, sig, frame):
         self.alive = False
-        os.eventfd_write(self.shutdown_event, 0)
+        os.eventfd_write(self.shutdown_event, 1)
 
     def handle_quit(self, sig, frame):
         self.alive = False
@@ -153,6 +153,10 @@ class ThreadWorker(base.Worker):
 
         # submit the connection to a worker
         self.enqueue_req(conn)
+
+    def on_shutdown_event(self, *args):
+        # Drain any readable input to avoid getting polled again
+        _ = os.eventfd_read(self.shutdown_event)
 
     def murder_keepalived(self):
         now = time.time()
@@ -207,7 +211,7 @@ class ThreadWorker(base.Worker):
             self.poller.register(sock, selectors.EVENT_READ, acceptor)
 
         # This is just used to wake up the poller, nothing else needs to be done.
-        self.poller.register(self.shutdown_event, selectors.EVENT_READ, lambda *args: None)
+        self.poller.register(self.shutdown_event, selectors.EVENT_READ, self.on_shutdown_event)
 
         while self.alive:
             # notify the arbiter we are alive
