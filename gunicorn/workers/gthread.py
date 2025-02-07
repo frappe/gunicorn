@@ -12,6 +12,7 @@
 
 from concurrent import futures
 import errno
+import faulthandler
 import os
 import selectors
 import socket
@@ -253,6 +254,7 @@ class ThreadWorker(base.Worker):
                 if current_time > fut._request_timeout:
                     self.alive = False
                     self.log.error("A request timed out. Exiting.")
+                    faulthandler.dump_traceback()
 
         self.tpool.shutdown(False)
         self.poller.close()
