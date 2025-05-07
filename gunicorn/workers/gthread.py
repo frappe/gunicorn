@@ -129,7 +129,7 @@ class ThreadWorker(base.Worker):
             self.nr_conns += 1
             # enqueue the job
             self.enqueue_req(conn)
-        except EnvironmentError as e:
+        except OSError as e:
             if e.errno not in (errno.EAGAIN, errno.ECONNABORTED,
                                errno.EWOULDBLOCK):
                 raise
