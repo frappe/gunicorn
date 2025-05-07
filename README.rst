@@ -5,6 +5,7 @@ This is a fork of gunicorn with the following changes:
 
 1. Request timeout implementation for `gthread` - https://github.com/frappe/gunicorn/pull/1 (upstream doesn't have any, we NEED this.)
 2. Higher timeout for `selector` - https://github.com/frappe/gunicorn/pull/2 (This is a small optional performance improvement)
+3. https://github.com/benoitc/gunicorn/pull/2918 is reverted to avoid connection resets while draining or restarting a worker. 
 
 Note to anyone upgrading/adding changes:
 - Pull upstream changes
