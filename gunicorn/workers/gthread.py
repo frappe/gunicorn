@@ -117,6 +117,8 @@ class ThreadWorker(base.Worker):
             self.tpool = futures.ThreadPoolExecutor(max_workers=fast)
             self.slow_pool = futures.ThreadPoolExecutor(max_workers=slow)
             self.predictor = SlowRoutePredictor(self.slow_threshold)
+            self.log.debug("adaptive queueing enabled: fast=%d slow=%d "
+                           "threshold=%.1fs", fast, slow, self.slow_threshold)
         else:
             self.tpool = self.get_thread_pool()
         self.poller = selectors.DefaultSelector()
@@ -220,6 +222,8 @@ class ThreadWorker(base.Worker):
 
         conn.route_key = self._route_key(line)
         slow = self.predictor.is_slow(conn.route_key)
+        self.log.debug("routing %r to %s lane", conn.route_key,
+                       "slow" if slow else "fast")
         self.enqueue_req(conn, slow=slow)
 
     def _peek_request_line(self, conn):
@@ -387,6 +391,8 @@ class ThreadWorker(base.Worker):
                     # without waiting for this request to finish
                     self.predictor.observe_slow(fut.conn.route_key)
                     fut._observed_slow = True
+                    self.log.debug("in-flight request %r crossed threshold; "
+                                   "marking route slow", fut.conn.route_key)
 
         self._shutdown_pools(False)
         self.poller.close()
@@ -406,8 +412,10 @@ class ThreadWorker(base.Worker):
         # is learned (or unlearned) as slow
         if (self.routing_enabled and fs.conn.route_key
                 and fs.conn.exec_start_time is not None):
-            self.predictor.update(fs.conn.route_key,
-                                  time.monotonic() - fs.conn.exec_start_time)
+            duration = time.monotonic() - fs.conn.exec_start_time
+            self.predictor.update(fs.conn.route_key, duration)
+            self.log.debug("observed %r took %.3fs", fs.conn.route_key,
+                           duration)
 
         try:
             (keepalive, conn) = fs.result()
