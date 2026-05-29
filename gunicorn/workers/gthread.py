@@ -48,6 +48,8 @@ class TConn:
         # route key (method + path), set by the worker when request routing is
         # enabled; used to predict and learn slow routes
         self.route_key = None
+        # set by ``handle`` when a pool thread picks this request up
+        self.exec_start_time = None
 
         # set the socket to non blocking
         self.sock.setblocking(False)
@@ -145,8 +147,11 @@ class ThreadWorker(base.Worker):
     def _wrap_future(self, fs, conn, slow=False):
         fs.conn = conn
         fs.slow = slow
-        fs._start_time = time.monotonic()
-        fs._request_timeout = fs._start_time + self.cfg.timeout
+        # ``handle`` records the actual execution start time on ``conn`` when
+        # the pool thread picks the request up; until then it stays None so
+        # the slow-route checks below skip still-queued requests.
+        conn.exec_start_time = None
+        fs._request_timeout = time.monotonic() + self.cfg.timeout
         fs._observed_slow = False
         self.futures.append(fs)
         fs.add_done_callback(self.finish_request)
@@ -375,7 +380,8 @@ class ThreadWorker(base.Worker):
                     faulthandler.dump_traceback()
                 elif (self.routing_enabled and not fut._observed_slow
                         and not fut.slow
-                        and current_time - fut._start_time > self.slow_threshold):
+                        and fut.conn.exec_start_time is not None
+                        and current_time - fut.conn.exec_start_time > self.slow_threshold):
                     # an in-flight fast-lane request crossed the threshold; learn
                     # the route as slow now so the rest of a burst is rerouted
                     # without waiting for this request to finish
@@ -398,9 +404,10 @@ class ThreadWorker(base.Worker):
 
         # feed the observed processing time back to the predictor so the route
         # is learned (or unlearned) as slow
-        if self.routing_enabled and fs.conn.route_key:
+        if (self.routing_enabled and fs.conn.route_key
+                and fs.conn.exec_start_time is not None):
             self.predictor.update(fs.conn.route_key,
-                                  time.monotonic() - fs._start_time)
+                                  time.monotonic() - fs.conn.exec_start_time)
 
         try:
             (keepalive, conn) = fs.result()
@@ -432,6 +439,7 @@ class ThreadWorker(base.Worker):
             fs.conn.close()
 
     def handle(self, conn):
+        conn.exec_start_time = time.monotonic()
         keepalive = False
         req = None
         try:
