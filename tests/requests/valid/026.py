@@ -1,7 +1,11 @@
+#
+# This file is part of gunicorn released under the MIT license.
+# See the NOTICE for more information.
+
 from gunicorn.config import Config
 
 cfg = Config()
-cfg.set('limit_request_line', 0)
+# Header line is 8209 bytes (name + ": " + value + CRLF)
 cfg.set('limit_request_field_size', 8210)
 request = {
     "method": "GET",

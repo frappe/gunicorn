@@ -5,10 +5,12 @@
 import os
 import re
 import sys
+import tempfile
 
 import pytest
 
 from gunicorn import config
+from gunicorn.config import _get_default_control_socket
 from gunicorn.app.base import Application
 from gunicorn.app.wsgiapp import WSGIApplication
 from gunicorn.errors import ConfigError
@@ -165,10 +167,18 @@ def test_str_validation():
 
 def test_str_to_addr_list_validation():
     c = config.Config()
+    # Values remain as strings for backward compatibility
     assert c.proxy_allow_ips == ["127.0.0.1", "::1"]
     assert c.forwarded_allow_ips == ["127.0.0.1", "::1"]
+    # Single IPs are validated but kept as strings
     c.set("forwarded_allow_ips", "127.0.0.1,192.0.2.1")
     assert c.forwarded_allow_ips == ["127.0.0.1", "192.0.2.1"]
+    # CIDR networks are supported and kept as strings
+    c.set("forwarded_allow_ips", "127.0.0.0/8,192.168.0.0/16")
+    assert c.forwarded_allow_ips == ["127.0.0.0/8", "192.168.0.0/16"]
+    # Wildcard is preserved as string
+    c.set("forwarded_allow_ips", "*")
+    assert c.forwarded_allow_ips == ["*"]
     c.set("forwarded_allow_ips", "")
     assert c.forwarded_allow_ips == []
     c.set("forwarded_allow_ips", None)
@@ -179,6 +189,9 @@ def test_str_to_addr_list_validation():
     pytest.raises(ValueError, c.set, "forwarded_allow_ips", "127.0.0")
     # detect typos
     pytest.raises(ValueError, c.set, "forwarded_allow_ips", "::f:")
+    # dangerous typos such as accidentally permitting half the internet
+    # clearly recognizable - masked bits are not zero
+    pytest.raises(ValueError, c.set, "forwarded_allow_ips", "100.64.0.0/1")
 
 
 def test_str_to_list():
@@ -540,3 +553,39 @@ def test_str():
         assert False, 'missing expected setting lines? {}'.format(
             OUTPUT_MATCH.keys()
         )
+
+
+# Tests for _get_default_control_socket
+
+class TestGetDefaultControlSocket:
+    """Tests for the _get_default_control_socket function."""
+
+    def test_uses_xdg_runtime_dir_when_set_and_exists(self, monkeypatch):
+        """When XDG_RUNTIME_DIR is set and exists, use it."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            monkeypatch.setenv('XDG_RUNTIME_DIR', tmpdir)
+            result = _get_default_control_socket()
+            assert result == os.path.join(tmpdir, 'gunicorn.ctl')
+
+    def test_falls_back_when_xdg_runtime_dir_not_exists(self, monkeypatch):
+        """When XDG_RUNTIME_DIR is set but doesn't exist, fall back to home."""
+        monkeypatch.setenv('XDG_RUNTIME_DIR', '/nonexistent/path/that/does/not/exist')
+        monkeypatch.setenv('HOME', '/home/testuser')
+        result = _get_default_control_socket()
+        assert result == '/home/testuser/.gunicorn/gunicorn.ctl'
+
+    def test_falls_back_when_xdg_runtime_dir_not_set(self, monkeypatch):
+        """When XDG_RUNTIME_DIR is not set, use home directory."""
+        monkeypatch.delenv('XDG_RUNTIME_DIR', raising=False)
+        monkeypatch.setenv('HOME', '/home/testuser')
+        result = _get_default_control_socket()
+        assert result == '/home/testuser/.gunicorn/gunicorn.ctl'
+
+    def test_uses_home_directory_structure(self, monkeypatch):
+        """Verify the path structure uses .gunicorn subdirectory."""
+        monkeypatch.delenv('XDG_RUNTIME_DIR', raising=False)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            monkeypatch.setenv('HOME', tmpdir)
+            result = _get_default_control_socket()
+            assert result == os.path.join(tmpdir, '.gunicorn', 'gunicorn.ctl')
+            assert result.endswith('.gunicorn/gunicorn.ctl')

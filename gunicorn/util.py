@@ -46,14 +46,25 @@ hop_headers = set("""
     server date
     """.split())
 
-try:
-    from setproctitle import setproctitle
-
-    def _setproctitle(title):
-        setproctitle("gunicorn: %s" % title)
-except ImportError:
+# setproctitle causes segfaults on macOS due to fork() safety issues
+# https://github.com/benoitc/gunicorn/issues/3021
+if sys.platform == "darwin":
     def _setproctitle(title):
         pass
+else:
+    try:
+        from setproctitle import setproctitle, getproctitle
+
+        # Force early initialization before any os.environ modifications
+        # (e.g. removing LISTEN_FDS in systemd socket activation)
+        # https://github.com/benoitc/gunicorn/issues/3430
+        getproctitle()
+
+        def _setproctitle(title):
+            setproctitle("gunicorn: %s" % title)
+    except ImportError:
+        def _setproctitle(title):
+            pass
 
 
 def load_entry_point(distribution, group, name):
@@ -266,6 +277,40 @@ def close(sock):
         sock.close()
     except OSError:
         pass
+
+
+def close_graceful(sock, timeout=2.0, max_drain=65536):
+    """Close a TCP socket following RFC 9112 section 9.6.
+
+    Half-closes the write side to send FIN, then lingers on the read side
+    to drain the kernel recv buffer until the peer closes or a cap is hit,
+    then fully closes. This avoids the kernel sending RST (truncating the
+    last response segment) when unread request data remains in the buffer.
+    """
+    try:
+        try:
+            sock.shutdown(socket.SHUT_WR)
+        except OSError:
+            return
+        deadline = time.monotonic() + timeout
+        drained = 0
+        while drained < max_drain:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                sock.settimeout(remaining)
+                data = sock.recv(4096)
+            except (socket.timeout, OSError):
+                break
+            if not data:
+                break
+            drained += len(data)
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
 
 
 try:

@@ -7,7 +7,6 @@ from datetime import datetime
 import errno
 import os
 import select
-import socket
 import ssl
 import sys
 
@@ -114,6 +113,14 @@ class SyncWorker(base.Worker):
         # use the CPU for nothing. This minimal timeout prevent it.
         timeout = self.timeout or 0.5
 
+        # Warn if HTTP/2 is requested - sync worker doesn't support it
+        if 'h2' in self.cfg.http_protocols:
+            self.log.warning(
+                "HTTP/2 is not supported by the sync worker. "
+                "Use gthread, gevent, or asgi workers for HTTP/2 support. "
+                "Falling back to HTTP/1.1 only."
+            )
+
         # self.socket appears to lose its blocking status after
         # we fork in the arbiter. Reset it here.
         for s in self.sockets:
@@ -129,7 +136,7 @@ class SyncWorker(base.Worker):
         try:
             if self.cfg.is_ssl:
                 client = sock.ssl_wrap_socket(client, self.cfg)
-            parser = http.RequestParser(self.cfg, client, addr)
+            parser = http.get_parser(self.cfg, client, addr)
             req = next(parser)
             self.handle_request(listener, req, client, addr)
         except http.errors.NoMoreData as e:
@@ -156,7 +163,7 @@ class SyncWorker(base.Worker):
         except BaseException as e:
             self.handle_error(req, client, addr, e)
         finally:
-            util.close(client)
+            util.close_graceful(client)
 
     def handle_request(self, listener, req, client, addr):
         environ = {}
@@ -195,11 +202,7 @@ class SyncWorker(base.Worker):
                 # If the requests have already been sent, we should close the
                 # connection to indicate the error.
                 self.log.exception("Error handling request")
-                try:
-                    client.shutdown(socket.SHUT_RDWR)
-                    client.close()
-                except OSError:
-                    pass
+                util.close_graceful(client)
                 raise StopIteration()
             raise
         finally:

@@ -1,0 +1,130 @@
+title: "[Triage] "
+labels:
+  - triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report an issue or suggest a feature!
+
+        **Before submitting, please:**
+        - Search [existing discussions](https://github.com/benoitc/gunicorn/discussions) and [issues](https://github.com/benoitc/gunicorn/issues) for duplicates
+        - Check the [FAQ](https://gunicorn.org/faq/) and [documentation](https://gunicorn.org/)
+
+  - type: dropdown
+    id: type
+    attributes:
+      label: Type
+      description: What type of issue is this?
+      options:
+        - Bug Report
+        - Feature Request
+        - Performance Issue
+        - Documentation Issue
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear description of the issue or feature request
+      placeholder: |
+        For bugs: What happened? What did you expect?
+        For features: What problem does this solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to Reproduce (for bugs)
+      description: Minimal steps to reproduce the behavior
+      placeholder: |
+        1. Create a simple app with...
+        2. Run gunicorn with...
+        3. Send request...
+        4. See error...
+    validations:
+      required: false
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: Your gunicorn configuration (command line or config file)
+      render: bash
+      placeholder: |
+        gunicorn --workers 4 --bind 0.0.0.0:8000 myapp:app
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Error Output
+      description: Relevant logs or error messages (use --log-level debug for more detail)
+      render: text
+    validations:
+      required: false
+
+  - type: input
+    id: gunicorn-version
+    attributes:
+      label: Gunicorn Version
+      description: Output of `gunicorn --version`
+      placeholder: gunicorn 24.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python Version
+      description: Output of `python --version`
+      placeholder: Python 3.12.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: worker-class
+    attributes:
+      label: Worker Class
+      description: Which worker type are you using?
+      options:
+        - sync (default)
+        - gthread
+        - gevent
+        - tornado
+        - asgi (beta)
+        - custom
+        - N/A (feature request)
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating System
+      description: Your OS and version
+      placeholder: Ubuntu 22.04, macOS 14.0, etc.
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any other context (proxy setup, Docker, proposed solution, etc.)
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched existing discussions and issues for duplicates
+          required: true
+        - label: I have checked the documentation and FAQ
+          required: true
