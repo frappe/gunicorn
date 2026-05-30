@@ -38,6 +38,15 @@ class FileWrapper:
             return data
         raise IndexError
 
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        data = self.filelike.read(self.blksize)
+        if data:
+            return data
+        raise StopIteration
+
 
 class WSGIErrorsWrapper(io.RawIOBase):
 
@@ -107,6 +116,75 @@ def proxy_environ(req):
     }
 
 
+def _make_early_hints_callback(req, sock, resp):
+    """Create a wsgi.early_hints callback for sending 103 Early Hints.
+
+    This allows WSGI applications to send 103 Early Hints responses
+    before the final response, enabling browsers to preload resources.
+
+    Args:
+        req: The request object
+        sock: The socket to write to
+        resp: The Response object to check if headers have been sent
+
+    Returns:
+        A callback function that accepts a list of (name, value) header tuples
+        and sends a 103 Early Hints response.
+
+    Note:
+        - Early hints are only sent for HTTP/1.1 or later clients
+        - HTTP/1.0 clients will silently ignore the callback
+        - Multiple calls are allowed (sending multiple 103 responses)
+        - Calls after response has started are silently ignored
+    """
+    def send_early_hints(headers):
+        """Send 103 Early Hints response.
+
+        Args:
+            headers: List of (name, value) header tuples, typically Link headers
+                     Example: [('Link', '</style.css>; rel=preload; as=style')]
+
+        Raises:
+            InvalidHeaderName: If a header name is not a valid HTTP token.
+            InvalidHeader: If a header value contains invalid characters.
+        """
+        # Don't send after response has started - would break framing
+        if resp.headers_sent:
+            return
+
+        # Don't send to HTTP/1.0 clients - they don't support 1xx responses
+        if req.version < (1, 1):
+            return
+
+        # Build 103 response
+        response = b"HTTP/1.1 103 Early Hints\r\n"
+        for name, value in headers:
+            if isinstance(name, bytes):
+                name = name.decode('latin-1')
+            if isinstance(value, bytes):
+                value = value.decode('latin-1')
+
+            # Validate header name and value using the same checks as
+            # Response.process_headers — defense-in-depth against
+            # HTTP response splitting via CRLF injection.
+            if not TOKEN_RE.fullmatch(name):
+                raise InvalidHeaderName('%r' % name)
+            if not HEADER_VALUE_RE.fullmatch(value):
+                # Pass only the name — the invalid value may contain
+                # sensitive data that shouldn't cross security boundaries
+                # via exception propagation (browsers/proxies may forward
+                # it to untrusted parties).
+                raise InvalidHeader('%r' % name)
+
+            value = value.strip(" \t")
+            response += f"{name}: {value}\r\n".encode('latin-1')
+        response += b"\r\n"
+
+        util.write(sock, response)
+
+    return send_early_hints
+
+
 def create(req, sock, client, server, cfg):
     resp = Response(req, sock, cfg)
 
@@ -117,13 +195,14 @@ def create(req, sock, client, server, cfg):
     host = None
     script_name = os.environ.get("SCRIPT_NAME", "")
 
+    if req._expected_100_continue:
+        sock.send(b"HTTP/1.1 100 Continue\r\n\r\n")
+        # rfc9112: Expect MUST be forwarded if the request is forwarded
+        # N.B. gunicorn just sends at most one - application might send another
+
     # add the headers to the environ
     for hdr_name, hdr_value in req.headers:
-        if hdr_name == "EXPECT":
-            # handle expect
-            if hdr_value.lower() == "100-continue":
-                sock.send(b"HTTP/1.1 100 Continue\r\n\r\n")
-        elif hdr_name == 'HOST':
+        if hdr_name == 'HOST':
             host = hdr_value
         elif hdr_name == "SCRIPT_NAME":
             script_name = hdr_value
@@ -194,6 +273,15 @@ def create(req, sock, client, server, cfg):
     # override the environ with the correct remote and server address if
     # we are behind a proxy using the proxy protocol.
     environ.update(proxy_environ(req))
+
+    # Add wsgi.early_hints callback for sending 103 Early Hints
+    environ['wsgi.early_hints'] = _make_early_hints_callback(req, sock, resp)
+
+    # Add HTTP/2 stream priority if available
+    if hasattr(req, 'priority_weight'):
+        environ['gunicorn.http2.priority_weight'] = req.priority_weight
+        environ['gunicorn.http2.priority_depends_on'] = req.priority_depends_on
+
     return resp, environ
 
 
@@ -212,6 +300,8 @@ class Response:
         self.sent = 0
         self.upgrade = False
         self.cfg = cfg
+        self._omits_body = False
+        self._omits_body_warned = False
 
     def force_close(self):
         self.must_close = True
@@ -248,8 +338,33 @@ class Response:
             self.status_code = None
 
         self.process_headers(headers)
+        self._omits_body = self._response_omits_body(
+            self.req.method, self.status_code)
+        if self._omits_body and self._response_forbids_content_length(
+                self.status_code):
+            self.headers = [
+                (k, v) for k, v in self.headers if k.lower() != "content-length"
+            ]
+            self.response_length = None
         self.chunked = self.is_chunked()
         return self.write
+
+    @staticmethod
+    def _response_omits_body(method, status):
+        # RFC 9110: HEAD requests and 1xx/204/304 responses MUST NOT carry
+        # a body, regardless of what the application emits.
+        return (
+            method == "HEAD"
+            or status in (204, 304)
+            or (status is not None and 100 <= status < 200)
+        )
+
+    @staticmethod
+    def _response_forbids_content_length(status):
+        # RFC 9110 §6.4.2: a server MUST NOT send Content-Length on 1xx or
+        # 204. HEAD MAY include the Content-Length the same GET would carry,
+        # and 304 MAY include the Content-Length of the unconditional response.
+        return status == 204 or (status is not None and 100 <= status < 200)
 
     def process_headers(self, headers):
         for name, value in headers:
@@ -291,12 +406,8 @@ class Response:
             return False
         elif self.req.version <= (1, 0):
             return False
-        elif self.req.method == 'HEAD':
-            # Responses to a HEAD request MUST NOT contain a response body.
-            return False
-        elif self.status_code in (204, 304):
-            # Do not use chunked responses when the response is guaranteed to
-            # not have a response body.
+        elif self._omits_body:
+            # No body permitted (HEAD or 1xx/204/304), so no chunked framing.
             return False
         return True
 
@@ -334,6 +445,15 @@ class Response:
         self.send_headers()
         if not isinstance(arg, bytes):
             raise TypeError('%r is not a byte' % arg)
+        if self._omits_body:
+            if arg and not self._omits_body_warned:
+                log.warning(
+                    "WSGI app sent body bytes on a no-body response "
+                    "(method=%s status=%s); dropping per RFC 9110.",
+                    self.req.method, self.status_code,
+                )
+                self._omits_body_warned = True
+            return
         arglen = len(arg)
         tosend = arglen
         if self.response_length is not None:
@@ -359,6 +479,17 @@ class Response:
     def sendfile(self, respiter):
         if self.cfg.is_ssl or not self.can_sendfile():
             return False
+
+        if self._omits_body:
+            self.send_headers()
+            if not self._omits_body_warned:
+                log.warning(
+                    "WSGI app sent body bytes on a no-body response "
+                    "(method=%s status=%s); dropping per RFC 9110.",
+                    self.req.method, self.status_code,
+                )
+                self._omits_body_warned = True
+            return True
 
         if not util.has_fileno(respiter.filelike):
             return False

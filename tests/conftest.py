@@ -1,0 +1,31 @@
+#
+# This file is part of gunicorn released under the MIT license.
+# See the NOTICE for more information.
+
+"""Pytest configuration for gunicorn tests."""
+
+import os
+import sys
+
+import pytest
+
+# Add the tests directory to sys.path so test support modules can be imported
+# as 'tests.module_name' (e.g., 'tests.support_dirty_apps:CounterApp')
+tests_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if tests_dir not in sys.path:
+    sys.path.insert(0, tests_dir)
+
+
+@pytest.fixture(params=["python", "fast"])
+def http_parser(request):
+    """Parametrize tests over http_parser implementations."""
+    if request.param == "fast":
+        # gunicorn_h1c ships as a CPython C extension; it is not reliable
+        # under PyPy (SIGSEGV observed in CI). Skip the fast parameter there.
+        if hasattr(sys, "pypy_version_info"):
+            pytest.skip("gunicorn_h1c not supported on PyPy")
+        gunicorn_h1c = pytest.importorskip("gunicorn_h1c", reason="gunicorn_h1c required")
+        # Require >= 0.6.2 for asgi_headers support
+        if not hasattr(gunicorn_h1c.H1CProtocol, 'asgi_headers'):
+            pytest.skip("gunicorn_h1c >= 0.6.2 required")
+    return request.param
