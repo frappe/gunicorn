@@ -358,6 +358,7 @@ class CompanionManager:
                 os._exit(0)
             self._apply_environment(process.config)
             self._redirect_output(process.config)
+            util._setproctitle("companion [%s]" % process.config.name)
             target = self._resolve_target(process.config.target)
             target()
         except SystemExit:
